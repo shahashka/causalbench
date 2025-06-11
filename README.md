@@ -87,12 +87,19 @@ Whether you’re proposing a new method, adding new features, improving existing
 
 Please consider citing, if you reference or use our methodology, code or results in your work: 
 
-    @article{chevalley2022causalbench,
-        title={{CausalBench: A Large-scale Benchmark for Network Inference from Single-cell Perturbation Data}},
-        author={Chevalley, Mathieu and Roohani, Yusuf and Mehrjou, Arash and Leskovec, Jure and Schwab, Patrick},
-        journal={arXiv preprint arXiv:2210.17283},
-        year={2022}
-    }
+    @article{chevalley2025causalbench,
+  author    = {Mathieu Chevalley and Yusuf H. Roohani and Arash Mehrjou and Jure Leskovec and Patrick Schwab},
+  title     = {A large-scale benchmark for network inference from single-cell perturbation data},
+  journal   = {Communications Biology},
+  year      = {2025},
+  volume    = {8},
+  number    = {1},
+  pages     = {412},
+  doi       = {10.1038/s42003-025-07764-y},
+  url       = {https://doi.org/10.1038/s42003-025-07764-y},
+  issn      = {2399-3642},
+
+}
 
 
 ### License
