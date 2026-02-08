@@ -18,13 +18,21 @@ from typing import List, Tuple
 import gies
 import numpy as np
 import pandas as pd
+import multiprocessing
+from concurrent.futures import ThreadPoolExecutor
 from causalscbench.models.abstract_model import AbstractInferenceModel
 from causalscbench.models.training_regimes import TrainingRegime
 from causalscbench.models.utils.model_utils import (
-    causallearn_graph_to_edges, partion_network, remove_lowly_expressed_genes)
-
+    partion_network, 
+    correlation_superstructure, 
+    expansive_causal_partition, screen_projections, 
+    remove_lowly_expressed_genes)
 
 class GIES(AbstractInferenceModel):
+    def __init__(self, partition: str = 'disjoint') -> None:
+        super().__init__()
+        self.partition = partition
+        
     def __call__(
         self,
         expression_matrix: np.array,
@@ -41,6 +49,8 @@ class GIES(AbstractInferenceModel):
         interventions = list(interventions)
 
         def process_partition(partition):
+            if len(partition) == 1:
+                return []
             gene_names_ = gene_names[partition]
             expression_matrix_ = expression_matrix[:, partition]
             node_dict = {g: idx for idx, g in enumerate(gene_names_)}
@@ -66,16 +76,32 @@ class GIES(AbstractInferenceModel):
 
             adjacency, _ = gies.fit_bic(data, I, iterate=False)
             indices = np.transpose(np.nonzero(adjacency))
-            edges = set()
+            edges_partition = set()
             for (i, j) in indices:
-                edges.add((gene_names_[i], gene_names_[j]))
-            return list(edges)
+                edges_partition.add((gene_names_[i], gene_names_[j]))
+            return list(edges_partition)
             
         
-        partitions = partion_network(gene_names, 30, seed)
-        edges = []
-        with ThreadPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
-            partition_results = list(executor.map(process_partition, partitions))
-            for result in partition_results:
-                edges += result
-        return edges
+        if self.partition == 'disjoint':
+            partitions = partion_network(gene_names, 30, seed)
+            edges = []
+            with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
+                partition_results = list(executor.map(process_partition, partitions))
+                for result in partition_results:
+                    edges += result
+            return edges
+        elif self.partition == 'causal':
+            ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=100)
+            # FOR DEBUGGING ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=10)
+            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=10,cutoff=30, best_n=30)
+            partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
+            edges = []
+            with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
+                partition_results = list(executor.map(process_partition, partition_inds))
+                for result in partition_results:
+                    edges.append(result)
+            final_edges = screen_projections(ss, partitions, edges, data=expression_matrix, ss_subset=False, finite_lim=True)
+            return final_edges
+        else:
+            print("GIES algorithm must have disjoint or causal partitions")
+            NotImplementedError()

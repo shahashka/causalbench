@@ -43,10 +43,10 @@ method_display_name_map = {
 evidence_display_map = {
     "stat_test": "Statistical Edge Test",
     "corum": "Protein Complexes",
-    "string_network": "Protein-protein\ninteractions (network)",
-    "string_physical": "Protein-protein\ninteractions (physical)",
+    "string_network_evaluation": "Protein-protein\ninteractions (network)",
+    "string_physical_evaluation": "Protein-protein\ninteractions (physical)",
     # "size": "size",
-    "chipseq": "CHIP-Seq",
+    "chipseq_evaluation": "CHIP-Seq",
     "run_time": "Runtime",
     "wasserstein": "Wasserstein"
 }
@@ -283,13 +283,13 @@ def setup(font_dir: str):
     plt.rcParams['font.family'] = 'Open Sans'
 
 
-def generate_plots_overall(plot_dir: str, data_dir: str, font_dir: str):
-    setup(font_dir)
+def generate_plots_overall(plot_dir: str, data_dir: str):#, font_dir: str):
+    #setup(font_dir)
     files = [
         "observational_total_k562.json",
-        "observational_total_rpe1.json",
-        "interventional_total_k562.json",
-        "interventional_total_rpe1.json"
+        # "observational_total_rpe1.json",
+        # "interventional_total_k562.json",
+        # "interventional_total_rpe1.json"
     ]
     for file_name in files:
         with open(os.path.join(data_dir, file_name), "r") as fp:
@@ -341,12 +341,12 @@ def generate_plots_int_sweeps(plot_dir: str, data_dir: str):
     plot_sweeps(df, outfile_path, sweep_title_display_map_int)
 
 
-def generate_plots(plot_dir: str, data_dir: str, font_dir: str):
-    setup(font_dir)
-    generate_plots_overall(plot_dir, data_dir, font_dir)
+def generate_plots(plot_dir: str, data_dir: str):#, font_dir: str):
+    #setup(font_dir)
+    generate_plots_overall(plot_dir, data_dir)#, font_dir)
     generate_plots_sweeps(plot_dir, data_dir)
     generate_plots_int_sweeps(plot_dir, data_dir)
 
 
 if __name__ == "__main__":
-    generate_plots(sys.argv[1], sys.argv[2], sys.argv[3])
+    generate_plots(sys.argv[1], sys.argv[2])#, sys.argv[3])

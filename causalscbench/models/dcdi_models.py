@@ -27,9 +27,10 @@ from torch.utils.data import DataLoader, random_split
 from causalscbench.models.abstract_model import AbstractInferenceModel
 from causalscbench.models.training_regimes import TrainingRegime
 from causalscbench.models.utils.model_utils import (
-    partion_network,
-    remove_lowly_expressed_genes,
-)
+    partion_network, 
+    correlation_superstructure, 
+    expansive_causal_partition, screen_projections, 
+    remove_lowly_expressed_genes)
 from causalscbench.third_party.dcdi.dcdi.data import DataManagerFile
 from causalscbench.third_party.dcdi.dcdi.models.flows import DeepSigmoidalFlowModel
 from causalscbench.third_party.dcdi.dcdi.models.learnables import (
@@ -53,9 +54,10 @@ from causalscbench.third_party.dcdfg.dcdfg.lowrank_mlp.model import (
 
 
 class DCDI(AbstractInferenceModel):
-    def __init__(self, model) -> None:
+    def __init__(self, model,  partition: str = 'disjoint') -> None:
         super().__init__()
         self.model = model
+        self.partition = partition
 
         self.opt = SimpleNamespace()
         self.opt.train_patience = 5
@@ -120,9 +122,13 @@ class DCDI(AbstractInferenceModel):
         gene_names = np.array(gene_names)
 
         if self.opt.gpu:
-            torch.set_default_tensor_type("torch.cuda.FloatTensor")
+            torch.set_default_dtype(torch.float32)
+            torch.set_default_device('cuda')
+            #torch.set_default_tensor_type("torch.cuda.FloatTensor")
 
         def process_partition(partition):
+            if len(partition) == 1:
+                return []
             gene_names_ = gene_names[partition]
             expression_matrix_ = expression_matrix[:, partition]
             node_dict = {g: idx for idx, g in enumerate(gene_names_)}
@@ -210,18 +216,34 @@ class DCDI(AbstractInferenceModel):
 
             adjacency = model.get_w_adj()
             indices = np.nonzero(adjacency > self.soft_adjacency_matrix_threshold)
-            edges = set()
+            edges_partition = set()
             for (i, j) in indices:
-                edges.add((gene_names_[i], gene_names_[j]))
-            return list(edges)
+                edges_partition.add((gene_names_[i], gene_names_[j]))
+            return list(edges_partition)
 
-        partitions = partion_network(gene_names, self.gene_partition_sizes, seed)
-        edges = []
-        with ThreadPoolExecutor(max_workers=self.max_parallel_executors) as executor:
-            partition_results = list(executor.map(process_partition, partitions))
-            for result in partition_results:
-                edges += result
-        return edges
+        if self.partition == 'disjoint':
+            partitions = partion_network(gene_names, 50, seed)
+            edges = []
+            with ThreadPoolExecutor(max_workers=self.max_parallel_executors) as executor:
+                partition_results = list(executor.map(process_partition, partitions))
+                for result in partition_results:
+                    edges += result
+            return edges
+        elif self.partition == 'causal':
+            ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=100)
+            # FOR DEBUGGING ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=10)
+            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=10,cutoff=30, best_n=30)
+            partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
+            edges = []
+            with ThreadPoolExecutor(max_workers=self.max_parallel_executors) as executor:
+                partition_results = list(executor.map(process_partition, partition_inds))
+                for result in partition_results:
+                    edges.append(result)
+            final_edges = screen_projections(ss, partitions, edges, data=expression_matrix, ss_subset=False, finite_lim=True)
+            return final_edges
+        else:
+            print("DCDI algorithm must have disjoint or causal partitions")
+            NotImplementedError()
 
 
 class DCDFG(AbstractInferenceModel):

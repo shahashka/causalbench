@@ -29,7 +29,10 @@ from causalscbench.evaluation import (biological_evaluation,
                                       statistical_evaluation)
 from causalscbench.models import training_regimes
 from causalscbench.models.arboreto_baselines import GENIE, GRNBoost
-from causalscbench.models.causallearn_models import GES, PC
+from causalscbench.models.causallearn_models import GES, PC, FCI
+#from causalscbench.models.tetrad_models import GES_Tetrad, PC_Tetrad
+#from causalscbench.models.pcalg_models import PC_Pcalg
+
 from causalscbench.models.dcdi_models import DCDI, DCDFG
 from causalscbench.models.feature_selection import (
     LassoFeatureSelection, RandomForestFeatureSelection)
@@ -57,17 +60,34 @@ METHODS = [
     "grnboost",
     "genie",
     "ges",
+    "ges_causal_part",
     "gies",
+    "gies_causal_part",
     "pc",
+    "pc_causal_part",
     "mvpc",
     "gsp",
+    "gsp_disjoint_part",
+    "gsp_causal_part",
     "igsp",
+    "igsp_disjoint_part",
+    "igsp_causal_part",
     "notears-lin",
+    "notears-lin_disjoint_part",
+    "notears-lin_causal_part",
     "notears-lin-sparse",
+    "notears-lin-sparse_disjoint_part",
+    "notears-lin-sparse_causal_part",
     "notears-mlp",
+    "notears-mlp_disjoint_part",
+    "notears-mlp_causal_part",
     "notears-mlp-sparse",
+    "notears-mlp-sparse_disjoint_part",
+    "notears-mlp-sparse_causal_part",
     "DCDI-G",
+    "DCDI-G_causal_part",
     "DCDI-DSF",
+    "DCDI-DSF_causal_part",
     "DCDFG-LIN",
     "DCDFG-MLP",
     "corum",
@@ -77,7 +97,7 @@ METHODS = [
     "custom",
     "chipseq",
     "pooled_biological_networks",
-    "sortnregress",
+    "sortnregress"
 ]
 
 
@@ -151,18 +171,48 @@ class MainApp:
             "random_forest": RandomForestFeatureSelection(),
             "grnboost": GRNBoost(),
             "genie": GENIE(),
+            
             "ges": GES(),
+            "ges_causal_part": GES(partition='causal'),
             "gies": GIES(),
+            "gies_causal_part": GIES(partition='causal'),
+            
             "pc": PC(missing_value=False),
+            "pc_causal_part": PC(partition='causal', missing_value=False),
+            "fci": FCI(),
+            "fci_causal_part": FCI(partition='causal'),
             "mvpc": PC(missing_value=True),
+            
             "gsp": GreedySparsestPermutation(),
+            "gsp_disjoint_part": GreedySparsestPermutation(partition='disjoint'),
+            "gsp_causal_part": GreedySparsestPermutation(partition='causal'),
+            
             "igsp": InterventionalGreedySparsestPermutation(),
+            "igsp_disjoint_part": InterventionalGreedySparsestPermutation(partition='disjoint'),
+            "igsp_causal_part": InterventionalGreedySparsestPermutation(partition='causal'),
+            
             "notears-lin": NotearsLin(lambda1=0.0),
+            "notears-lin_disjoint_part": NotearsLin(lambda1=0.0, partition="disjoint"),
+            "notears-lin_causal_part": NotearsLin(lambda1=0.0, partition="causal"),
+
             "notears-lin-sparse": NotearsLin(lambda1=0.001),
+            "notears-lin-sparse_disjoint_part": NotearsLin(lambda1=0.001, partition="disjoint"),
+            "notears-lin-sparse_causal_part": NotearsLin(lambda1=0.001, partition="causal"),
+            
             "notears-mlp": NotearsMLP(lambda1=0.0),
+            "notears-mlp_disjoint_part": NotearsMLP(lambda1=0.0, partition="disjoint"),
+            "notears-mlp_causal_part": NotearsMLP(lambda1=0.0, partition="causal"),
+            
             "notears-mlp-sparse": NotearsMLP(lambda1=0.001),
+            "notears-mlp-sparse_disjoint_part": NotearsMLP(lambda1=0.001, partition="disjoint"),
+            "notears-mlp-sparse_causal_part": NotearsMLP(lambda1=0.001, partition="causal"),
+
             "DCDI-G": DCDI("DCDI-G"),
+            "DCDI-G_causal_part": DCDI("DCDI-G",  partition="causal"),
+            
             "DCDI-DSF": DCDI("DCDI-DSF"),
+            "DCDI-DSF_causal_part": DCDI("DCDI-DSF",  partition="causal"),
+            
             "DCDFG-LIN": DCDFG("linear"),
             "DCDFG-MLP": DCDFG("mlplr"),
             "corum": self.corum_evaluator,
@@ -171,7 +221,7 @@ class MainApp:
             "string_physical": self.string_physical_evaluator,
             "chipseq": self.chipseq_evaluator,
             "pooled_biological_networks": self.pooled_biological_evaluator,
-            "sortnregress": Sortnregress(),
+            "sortnregress": Sortnregress()
         }
         if self.model_name not in METHODS:
             raise NotImplementedError()
@@ -191,6 +241,7 @@ class MainApp:
             self.dataset_splitter = DatasetSplitter(path_rpe1, self.subset_data)
         else:
             raise NotImplementedError()
+        print(self.dataset_splitter.expression_matrix_train.shape,self.dataset_splitter.expression_matrix_test.shape)
 
     def load_evaluators(self):
         (
@@ -278,6 +329,7 @@ class MainApp:
             json.dump(arguments, output)
         start_time = time.time()
         logging.info("Starting model training.")
+        print(expression_matrix_train.shape)
         output_network = self.model(
             expression_matrix_train,
             list(interventions_train),

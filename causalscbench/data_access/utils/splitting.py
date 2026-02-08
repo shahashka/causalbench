@@ -88,6 +88,8 @@ class DatasetSplitter(object):
         genes_to_keep = set(random.sample(intervened_genes, nb_to_keep))
         genes_to_keep.add("non-targeting")
         samples_to_keep = [x in genes_to_keep for x in self.interventions_train]
+        print(self.expression_matrix_train.shape)
+        print(self.expression_matrix_train[samples_to_keep, :].shape)
         return (
             self.expression_matrix_train[samples_to_keep, :],
             compress(self.interventions_train, samples_to_keep),
