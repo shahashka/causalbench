@@ -50,7 +50,7 @@ class NotearsLin(AbstractInferenceModel):
         )
         causalscbench.third_party.notears.utils.set_random_seed(seed)
         gene_names = np.array(gene_names)
-
+        print(f"Number of genes {len(gene_names)}")
         def process_partition(partition):
             if len(partition) == 1:
                 return []
@@ -75,14 +75,15 @@ class NotearsLin(AbstractInferenceModel):
             return edges
         elif self.partition == 'causal':
             ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=100)
-            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=5,cutoff=30, best_n=30)
+            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=5,cutoff=1, best_n=None)
             partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
             edges = []
             with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
                 partition_results = list(executor.map(process_partition, partition_inds))
                 for result in partition_results:
                     edges.append(result)
-            return screen_projections(ss, partitions, edges, ss_subset=True, finite_lim=False)
+                    print(result)
+            return screen_projections(ss, partitions, edges, ss_subset=False, finite_lim=True)
         else:
             return process_partition([i for i in range(len(gene_names))])
 
