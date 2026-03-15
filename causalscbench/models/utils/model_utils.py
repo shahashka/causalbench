@@ -13,6 +13,7 @@ limitations under the License.
 """
 import random
 from typing import List, Any
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -23,9 +24,11 @@ from numpy.random import RandomState
 import scipy
 import itertools
 from sklearn.metrics import mutual_info_score
-
-from causalscbench.data_access.create_evaluation_datasets import \
-    CreateEvaluationDatasets
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
     
 def load_random_state(
     random_state: RandomState | int | None = None,
@@ -65,56 +68,6 @@ def partion_network(gene_names, partitions_length, seed):
     return partitions
 from collections import deque
 
-# def bounded_graph_clustering(superstructure: np.ndarray, max_cluster_size: int):
-#     """
-#     Cluster an undirected NetworkX graph with a hard maximum cluster size.
-
-#     Parameters
-#     ----------
-#     G : nx.Graph
-#         Undirected graph
-#     max_cluster_size : int
-#         Maximum allowed size of each cluster
-
-#     Returns
-#     -------
-#     clusters : list of sets
-#         Each set contains nodes in one cluster
-#     """
-#     G = nx.from_numpy_array(superstructure)
-
-#     unassigned = set(G.nodes())
-#     clusters = []
-
-#     # Optional: process higher-degree nodes first
-#     nodes_by_degree = sorted(G.nodes(), key=lambda n: G.degree(n), reverse=True)
-
-#     for seed in nodes_by_degree:
-#         if seed not in unassigned:
-#             continue
-
-#         cluster = set()
-#         queue = deque([seed])
-
-#         while queue and len(cluster) < max_cluster_size:
-#             node = queue.popleft()
-#             if node not in unassigned:
-#                 continue
-
-#             cluster.add(node)
-#             unassigned.remove(node)
-
-#             # Add neighbors greedily
-#             for nbr in G.neighbors(node):
-#                 if nbr in unassigned and len(cluster) < max_cluster_size:
-#                     queue.append(nbr)
-
-#         clusters.append(cluster)
-
-#         if not unassigned:
-#             break
-#     return dict(zip(np.arange(len(clusters)), clusters))
-
 def modularity_partition(
     superstructure: np.ndarray,
     gene_names:List[Any],
@@ -148,81 +101,80 @@ def modularity_partition(
         partition[idx] = list(c)
     return partition
 
-# def rand_edge_cover_partition(
-#     superstructure: np.ndarray,
-#     gene_names: List[Any],
-#     resolution: int = 1,
-#     cutoff: int = 1,
-#     best_n: int = None,
-# ):
-#     """Creates a random edge covering partition.
+def rand_edge_cover_partition(
+    superstructure: np.ndarray,
+    gene_names: List[Any],
+    resolution: int = 1,
+    cutoff: int = 1,
+    best_n: int = None,
+):
+    """Creates a random edge covering partition.
 
-#     Uses greedy modularity to create a disjoint partition. Then, randomly
-#     chooses cut edges and randomly assigns endpoints to communities.
-#     Recursively adds any shared endpoints to the same community
+    Uses greedy modularity to create a disjoint partition. Then, randomly
+    chooses cut edges and randomly assigns endpoints to communities.
+    Recursively adds any shared endpoints to the same community
 
-#     Args:
-#         adj_mat (np.ndarray): Adjacency matrix for the graph
-#         data (pd.DataFrame): unused parameter
-#         resolution (float): resolution parameter, trading off intra-
-#             versus inter-group edges.
-#         cutoff (int): lower limit on number of communities before termination
-#         best_n (int): upper limit on number of communities before termination
+    Args:
+        adj_mat (np.ndarray): Adjacency matrix for the graph
+        data (pd.DataFrame): unused parameter
+        resolution (float): resolution parameter, trading off intra-
+            versus inter-group edges.
+        cutoff (int): lower limit on number of communities before termination
+        best_n (int): upper limit on number of communities before termination
 
-#     Returns:
-#         dict: the overlapping partition as a dictionary {comm_id : [nodes]}
-#     """
-#     #partition = bounded_graph_clustering(superstructure, max_cluster_size=30)
-#     partition = modularity_partition(superstructure, gene_names=gene_names, resolution=resolution, best_n=best_n, cutoff=cutoff)
-#     #compressed_partition = dict()
-#     print(f"Number of initial partitions: {len(partition.keys())}, biggest: {max([len(v) for v in partition.values()])}, smallest {min([len(v) for v in partition.values()])}")
-#     print([len(v) for v in partition.values()])
+    Returns:
+        dict: the overlapping partition as a dictionary {comm_id : [nodes]}
+    """
+    #partition = bounded_graph_clustering(superstructure, max_cluster_size=30)
+    partition = modularity_partition(superstructure, gene_names=gene_names, resolution=resolution, best_n=best_n, cutoff=cutoff)
+    #compressed_partition = dict()
+    print(f"Number of initial partitions: {len(partition.keys())}, biggest: {max([len(v) for v in partition.values()])}, smallest {min([len(v) for v in partition.values()])}")
+    print([len(v) for v in partition.values()])
 
-#     G = nx.from_numpy_array(superstructure)
-#     nx.relabel_nodes(G, dict(zip(np.arange(len(gene_names)), gene_names)))
-#     # degrees = [G.degree(v) for v in G.nodes()]
-#     # print(f"Max degree in graph is {max(degrees)}")
+    G = nx.from_numpy_array(superstructure)
+    G = nx.relabel_nodes(G, dict(zip(np.arange(len(gene_names)), gene_names)))
+    # degrees = [G.degree(v) for v in G.nodes()]
+    # print(f"Max degree in graph is {max(degrees)}")
+    def edge_coverage_helper(i, j, comm, cut_edges, node_to_comm):
+        if comm not in node_to_comm[i]:
+            node_to_comm[i] += [comm]
+        if comm not in node_to_comm[j]:
+            node_to_comm[j] += [comm]
+        cut_edges.remove((i, j))
+        return node_to_comm, cut_edges
 
-#     def edge_coverage_helper(i, j, comm, cut_edges, node_to_comm):
-#         if comm not in node_to_comm[i]:
-#             node_to_comm[i] += [comm]
-#         if comm not in node_to_comm[j]:
-#             node_to_comm[j] += [comm]
-#         cut_edges.remove((i, j))
-#         return node_to_comm, cut_edges
+    node_to_comm = dict()
+    for comm_id, comm in partition.items():
+        for node in comm:
+            node_to_comm[node] = [comm_id]
+    cut_edges = []
+    for edge in G.edges():
+        if node_to_comm[edge[0]] != node_to_comm[edge[1]]:
+            cut_edges.append(edge)
+    # Randomly choose a cut edge until all edges are covered
+    while len(cut_edges) > 0:
+        edge_ind = np.random.choice(np.arange(len(cut_edges)))
+        i = cut_edges[edge_ind][0]
+        j = cut_edges[edge_ind][1]
 
-#     node_to_comm = dict()
-#     for comm_id, comm in partition.items():
-#         for node in comm:
-#             node_to_comm[node] = [comm_id]
-#     cut_edges = []
-#     for edge in G.edges():
-#         if node_to_comm[edge[0]] != node_to_comm[edge[1]]:
-#             cut_edges.append(edge)
+        # Randomly choose an endpoint and associated community
+        possible_comms = list(set(node_to_comm[i] + node_to_comm[j]))
+        comm = np.random.choice(possible_comms)
+        node_to_comm, cut_edges = edge_coverage_helper(
+            i, j, comm, cut_edges, node_to_comm
+        )
 
-#     # Randomly choose a cut edge until all edges are covered
-#     while len(cut_edges) > 0:
-#         edge_ind = np.random.choice(np.arange(len(cut_edges)))
-#         i = cut_edges[edge_ind][0]
-#         j = cut_edges[edge_ind][1]
-
-#         # Randomly choose an endpoint and associated community
-#         possible_comms = list(set(node_to_comm[i] + node_to_comm[j]))
-#         comm = np.random.choice(possible_comms)
-#         node_to_comm, cut_edges = edge_coverage_helper(
-#             i, j, comm, cut_edges, node_to_comm
-#         )
-
-#     edge_cover_partition = dict()
-#     # Update the disjoint partition
-#     for n, comms in node_to_comm.items():
-#         for c in comms:
-#             if c in edge_cover_partition.keys():
-#                 edge_cover_partition[c] += [n]
-#             else:
-#                 edge_cover_partition[c] = [n]
-#     print(f"Number of partitions: {len(edge_cover_partition.keys())}, biggest: {max([len(v) for v in edge_cover_partition.values()])}, smallest {min([len(v) for v in edge_cover_partition.values()])}")
-#     return edge_cover_partition
+    edge_cover_partition = dict()
+    # Update the disjoint partition
+    for n, comms in node_to_comm.items():
+        for c in comms:
+            if c in edge_cover_partition.keys():
+                edge_cover_partition[c] += [n]
+            else:
+                edge_cover_partition[c] = [n]
+    sizes = [len(v) for v in edge_cover_partition.values()]
+    print(f"Number of partitions: {len(edge_cover_partition.keys())}, biggest: {max(sizes)}, smallest {min(sizes)}")
+    return edge_cover_partition
 
 def expansive_causal_partition(
     superstructure: np.ndarray,
@@ -260,7 +212,8 @@ def expansive_causal_partition(
         outer_node_boundary = nx.node_boundary(G, c)
         expanded_cluster = set(c).union(outer_node_boundary)
         causal_partition[idx] = list(expanded_cluster)
-    print(f"Partition sizes: {[len(v) for v in causal_partition.values()]}")
+    sizes = [len(v) for v in causal_partition.values()]
+    print(f"Partition sizes: {sizes}")
     return causal_partition
     
 # def artificial_superstructure(
@@ -323,7 +276,20 @@ def expansive_causal_partition(
 #             ss[i,j] = 1
 #     return ss
     
-    
+
+def _permute_and_max_corr(args):
+    matrix, seed = args
+    rng = np.random.default_rng(seed)
+
+    # shuffle each row independently
+    shuffled = np.apply_along_axis(rng.permutation, 1, matrix)
+
+    corr = np.corrcoef(shuffled, rowvar=False)
+    np.fill_diagonal(corr, 0)
+
+    return np.max(corr)
+
+
 def correlation_superstructure(
     expression_matrix: np.ndarray, 
     seed: int, 
@@ -349,23 +315,18 @@ def correlation_superstructure(
         an adjacency matrix for the superstructure we've created
     """
     expression_matrix = pd.DataFrame(data=expression_matrix)
-    random_state = load_random_state(seed)
     corr_mat = expression_matrix.corr("pearson").to_numpy()
     np.fill_diagonal(corr_mat, 0)
     random_corr_coef = []
-    # Permutation testing
-    for _ in range(num_iterations):
-        # shuffled_array = np.zeros(data.shape)
-        # for row in np.arange(data.shape[0]):  # randomly shuffle each row
-        #     shuffled_array[row] = random_state.permutation(data.iloc[row])
-        shuffled_final_data_set = expression_matrix.apply(np.random.permutation, axis=1, result_type='broadcast')
-        #shuffled_final_data_set = pd.DataFrame(data=shuffled_array)
-        shuffle_corr_mat = shuffled_final_data_set.corr("pearson")
-        shuffle_corr_mat = shuffle_corr_mat.to_numpy()
-        np.fill_diagonal(shuffle_corr_mat, 0)
-        random_corr_coef.append(
-            np.max(shuffle_corr_mat)
-        )  # find the max value (excluding diagonal)
+    # prepare seeds for reproducibility
+    rng = np.random.default_rng(seed)
+    seeds = rng.integers(0, 10**9, size=num_iterations)
+    tasks = [(expression_matrix, s) for s in seeds]
+
+    # parallel permutation testing
+    with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+        random_corr_coef = list(executor.map(_permute_and_max_corr, tasks))
+
     ci_interval = scipy.stats.t.interval(
         0.99,
         len(random_corr_coef) - 1,
@@ -377,6 +338,8 @@ def correlation_superstructure(
     corr_mat[corr_mat <= cutoff] = 0
     corr_mat[corr_mat > cutoff] = 1
     print(f"Superstructure has {np.sum(corr_mat)} edges")
+    # Save superstructure as graph and edge list
+    G_ss = nx.from_numpy_array(corr_mat)
     return corr_mat
 
 def _convert_local_edge_to_graph(partition, local_cd_edges):
@@ -514,7 +477,7 @@ def screen_projections_pag2cpdag(
             cpdag[u, v] = 0
 
     # Find all unshielded colliders in local estimated graphs
-    for comm_id, pag in enumerate(local_cd_adj_mats):
+    for comm_id, pag in enumerate(local_cd_adj_mats): # TODO fix this
         arrowheads_from = [
             [i for i in range(pag.shape[0]) if pag[i, col] == 2]
             for col in range(pag.shape[1])
@@ -589,6 +552,7 @@ def screen_projections(
         local_cd_edges,
     )
     global_graph = _union_with_overlaps(local_cd_graphs)
+    print(f"Global graph union num edge {len(global_graph.edges())}")
 
     # Remove all edges not present in superstructure
     ss_graph = nx.from_numpy_array(ss, create_using=nx.DiGraph)
@@ -597,7 +561,7 @@ def screen_projections(
 
     # global_graph = no edge if (no edge in comm1) or (no edge in comm2)
     k = list(partition.keys())
-    k.sort()
+    k.sort() 
     for i, edges in zip(k, local_cd_edges):
         comm = partition[i]
         if len(comm) > 1:

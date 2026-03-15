@@ -12,21 +12,37 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 import multiprocessing
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from typing import List, Tuple
 
 import causallearn.search.ConstraintBased.PC
 import causallearn.search.ConstraintBased.FCI
 import causallearn.search.ScoreBased.GES
 import numpy as np
-import random 
 from causalscbench.models.abstract_model import AbstractInferenceModel
 from causalscbench.models.training_regimes import TrainingRegime
 from causalscbench.models.utils.model_utils import (
     causallearn_graph_to_edges, partion_network, 
     correlation_superstructure, 
-    expansive_causal_partition, screen_projections, 
+    expansive_causal_partition, screen_projections, rand_edge_cover_partition,
     remove_lowly_expressed_genes)
+def process_partition_ges(args):
+        partition, gene_names, expression_matrix = args
+
+        if len(partition) == 1:
+            return []
+
+        gene_names_ = gene_names[partition]
+        expression_matrix_ = expression_matrix[:, partition]
+        res_map = causallearn.search.ScoreBased.GES.ges(
+            expression_matrix_,
+            score_func="local_score_BIC",
+            maxP=10,
+            parameters=None,
+        )
+        G = res_map["G"]
+        return causallearn_graph_to_edges(G, gene_names_)
+    
 class GES(AbstractInferenceModel):
     def __init__(self, partition: str = 'disjoint') -> None:
         super().__init__()
@@ -47,42 +63,51 @@ class GES(AbstractInferenceModel):
             expression_matrix, gene_names, expression_threshold=0.5
         )
         gene_names = np.array(gene_names)
-
-        def process_partition(partition):
-            if len(partition) == 1:
-                return []
-            gene_names_ = gene_names[partition]
-            expression_matrix_ = expression_matrix[:, partition]
-            res_map = causallearn.search.ScoreBased.GES.ges(
-                expression_matrix_,
-                score_func="local_score_BIC",
-                maxP=10,
-                parameters=None,
-            )
-            G = res_map["G"]
-            return causallearn_graph_to_edges(G, gene_names_)
+        print(f"Number of genes {len(gene_names)}")
 
         if self.partition == 'disjoint':
             partitions = partion_network(gene_names, 30, seed)
+            tasks = [
+                (partition, gene_names, expression_matrix)
+                for partition in partitions
+            ]
             edges = []
-            with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
-                partition_results = list(executor.map(process_partition, partitions))
-                for result in partition_results:
-                    edges += result
-            return edges
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_ges, tasks):
+                    edges += e
+            return {"network": edges, "partition": partitions}
+        
         elif self.partition == 'causal':
-            ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=100)
-            #partitions = expansive_causal_partition(ss, gene_names=gene_names,resolution=5,cutoff=10, best_n=10)
-            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=10,cutoff=30, best_n=30)
+            ss = correlation_superstructure(expression_matrix, seed=seed)#, num_iterations=100)
+            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=10,cutoff=1, best_n=100)
             partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
+            tasks = [
+                (partition, gene_names, expression_matrix)
+                for partition in partition_inds
+            ]
             edges = []
-            with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
-                partition_results = list(executor.map(process_partition, partition_inds))
-                for result in partition_results:
-                    edges.append(result)
-            return screen_projections(ss, partitions, edges, ss_subset=True, finite_lim=False)
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_ges, tasks):
+                    edges.append(e)
+            network = screen_projections(ss, partitions, edges, ss_subset=True, finite_lim=False)
+            return {"network": network, "superstructure": ss, "partition": partitions, "local_edges": edges}
+        
+        elif self.partition == 'edge_cover':
+            ss = correlation_superstructure(expression_matrix, seed=seed)#, num_iterations=100)
+            partitions = rand_edge_cover_partition(ss,gene_names=gene_names, resolution=10 ,cutoff=1, best_n=100)
+            partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
+            tasks = [
+                (partition, gene_names, expression_matrix)
+                for partition in partition_inds
+            ]
+            edges = []
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_ges, tasks):
+                    edges.append(e)
+            network = screen_projections(ss, partitions, edges, ss_subset=True, finite_lim=False)
+            return {"network": network, "superstructure": ss, "partition": partitions, "local_edges": edges}
         else:
-            print("GES algorithm must have disjoint or causal partitions")
+            print("GES algorithm must have disjoint, edge cover or causal partitions")
             NotImplementedError()
 
 

@@ -21,7 +21,6 @@ from causalscbench.models.abstract_model import AbstractInferenceModel
 from causalscbench.models.training_regimes import TrainingRegime
 from causalscbench.models.utils.model_utils import remove_lowly_expressed_genes
 
-
 class GRNBoost(AbstractInferenceModel):
     def __call__(
         self,
@@ -46,7 +45,7 @@ class GRNBoost(AbstractInferenceModel):
             early_stop_window_length=10,
             verbose=True,
         )
-        return [(i, j) for i, j in network[["TF", "target"]].values]
+        return {"network":[(i, j) for i, j in network[["TF", "target"]].values]}
 
 
 class GENIE(AbstractInferenceModel):
@@ -67,4 +66,4 @@ class GENIE(AbstractInferenceModel):
             seed=seed,
             verbose=True,
         )
-        return [(i, j) for i, j in network[["TF", "target"]].values]
+        return {"network":[(i, j) for i, j in network[["TF", "target"]].values]}

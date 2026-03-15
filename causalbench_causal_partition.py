@@ -35,49 +35,49 @@ if __name__ == '__main__':
     config = get_parsl_config()
     # NOTE(MS): this is how you vary arg inputs into your expeirment
     args = []
-    dataset_name=['weissmann_k562']#, "weissmann_rpe1"]
+    dataset_name=['weissmann_k562', "weissmann_rpe1"]
     cd_name_obs = [
-            "random100",
-            "random1000",
-            "random10000",
-            "fully-connected",
-            "lasso",
-            "random_forest",
-            "grnboost",
-            "genie",
-            "ges", # partitioned size 30 
+            # "random100",
+            # "random1000",
+            # "random10000",
+            # "fully-connected",
+            # "lasso",
+            # "random_forest",
+            # "grnboost",
+            # "genie",
+            # "ges", # partitioned size 30 
             "ges_causal_part",
-            "pc",# partitioned size 30 
+            # "pc",# partitioned size 30 
             "pc_causal_part",
-            "gsp",
-            "gsp_disjoint_part",
+            # "gsp",
+            # "gsp_disjoint_part",
             "gsp_causal_part",
-            "notears-lin",
-            "notears-lin_disjoint_part",
+            # "notears-lin",
+            # "notears-lin_disjoint_part",
             "notears-lin_causal_part",
-            "notears-lin-sparse",
-            "notears-lin-sparse_disjoint_part",
+            # "notears-lin-sparse",
+            # "notears-lin-sparse_disjoint_part",
             "notears-lin-sparse_causal_part",
-            "notears-mlp",
-            "notears-mlp_disjoint_part",
+            # "notears-mlp",
+            # "notears-mlp_disjoint_part",
             "notears-mlp_causal_part",
-            "notears-mlp-sparse",
-            "notears-mlp-sparse_disjoint_part",
+            # "notears-mlp-sparse",
+            # "notears-mlp-sparse_disjoint_part",
             "notears-mlp-sparse_causal_part",
             
             ]
     cd_name_int = [
-            "random100",
-            "random1000",
-            "random10000",
-            "gies", # partitioned size 30 
+            # "random100",
+            # "random1000",
+            # "random10000",
+            # "gies", # partitioned size 30 
             "gies_causal_part",
-            "igsp",
-            "igsp_disjoint_part",
+            # "igsp",
+            # "igsp_disjoint_part",
             "igsp_causal_part",
-            "DCDI-G",# partitioned size 50 
+            # "DCDI-G",# partitioned size 50 
             "DCDI-G_causal_part",
-            "DCDI-DSF", # partitioned size 50 
+            # "DCDI-DSF", # partitioned size 50 
             "DCDI-DSF_causal_part",
             # "DCDFG-LIN", # partitioned size 50 
             # "DCDFG-MLP" # partitioned size 50 

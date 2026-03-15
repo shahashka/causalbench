@@ -35,8 +35,8 @@ pwd""",
         "scheduler_options": "#PBS -l filesystems=home:grand:grand",  # specify any PBS options here, like filesystems
         "account": " FRAME-IDP",
         "queue": "preemptable",  # e.g.: "prod","debug, "preemptable", "debug-scaling" (see https://docs.alcf.anl.gov/polaris/running-jobs/)
-        "walltime": "01:00:00", #HH:MM:SS
-        "nodes_per_block": 1,  # think of a block as one job on polaris, so to run on the main queues, set this >= 10
+        "walltime": "24:00:00", #HH:MM:SS
+        "nodes_per_block": 3,  # think of a block as one job on polaris, so to run on the main queues, set this >= 10
         "available_accelerators": 4,  # Each Polaris node has 4 GPUs, setting this ensures one worker per GPU
     }
     provider=PBSProProvider(
@@ -139,3 +139,5 @@ pwd""",
     ),
 )
     return config
+
+

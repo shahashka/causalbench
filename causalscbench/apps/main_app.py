@@ -19,6 +19,8 @@ import time
 import pandas as pd
 import slingpy as sp
 from  slingpy.utils import logging
+import networkx as nx
+import pickle
 from causalscbench.apps.utils.run_utils import (
     create_experiment_folder, get_if_valid_custom_function_file)
 from causalscbench.data_access.create_dataset import CreateDataset
@@ -60,6 +62,7 @@ METHODS = [
     "grnboost",
     "genie",
     "ges",
+    "ges_edge_part",
     "ges_causal_part",
     "gies",
     "gies_causal_part",
@@ -173,6 +176,7 @@ class MainApp:
             "genie": GENIE(),
             
             "ges": GES(),
+            "ges_edge_part": GES(partition='edge_cover'),
             "ges_causal_part": GES(partition='causal'),
             "gies": GIES(),
             "gies_causal_part": GIES(partition='causal'),
@@ -330,13 +334,29 @@ class MainApp:
         start_time = time.time()
         logging.info("Starting model training.")
         print(expression_matrix_train.shape)
-        output_network = self.model(
+        output = self.model(
             expression_matrix_train,
             list(interventions_train),
             gene_names,
             self.training_regime,
             self.model_seed,
         )
+        output_network = output["network"]
+        if 'superstructure' in output.keys() :
+            superstructure = output["superstructure"]
+            G_ss = nx.from_numpy_array(superstructure)
+            nx.write_gexf(G_ss, os.path.join(self.output_directory, "superstructure.gexf"))
+            
+        if 'partition' in output.keys():
+            partition = output["partition"]
+            with open(os.path.join(self.output_directory, "partition.pkl"), "wb") as f:
+                pickle.dump(partition, f)
+                
+        if 'local_edges' in output.keys():
+            local_edges = output["local_edges"]
+            with open(os.path.join(self.output_directory, "local_edges.pkl"), "wb") as f:
+                pickle.dump(local_edges, f)
+                
         logging.info("Model training finished.")
         end_time = time.time()
         logging.info("Evaluating model.")

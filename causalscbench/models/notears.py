@@ -19,7 +19,7 @@ import causalscbench.third_party.notears.nonlinear
 import causalscbench.third_party.notears.utils
 import numpy as np
 import multiprocessing
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from causalscbench.models.abstract_model import AbstractInferenceModel
 from causalscbench.models.training_regimes import TrainingRegime
 from causalscbench.models.utils.model_utils import (
@@ -28,6 +28,28 @@ from causalscbench.models.utils.model_utils import (
     expansive_causal_partition, screen_projections, 
     remove_lowly_expressed_genes)
 
+def process_partition_lin(args):
+        partition, gene_names, expression_matrix, lambda1 = args
+
+        if len(partition) == 1:
+            return []
+
+        gene_names_ = gene_names[partition]
+        expression_matrix_ = expression_matrix[:, partition]
+
+        adjacency = causalscbench.third_party.notears.linear.notears_linear(
+            expression_matrix_,
+            lambda1=lambda1,
+            max_iter=20,
+            loss_type="l2",
+            w_threshold=0.3,
+        )
+        indices = np.transpose(np.nonzero(adjacency))
+        edges_partition = set()
+        for (i, j) in indices:
+            edges_partition.add((gene_names_[i], gene_names_[j]))
+        return list(edges_partition)
+    
 class NotearsLin(AbstractInferenceModel):
     def __init__(self, lambda1: float = 0.0, partition: str = 'none') -> None:
         super().__init__()
@@ -48,45 +70,40 @@ class NotearsLin(AbstractInferenceModel):
         expression_matrix, gene_names = remove_lowly_expressed_genes(
             expression_matrix, gene_names, expression_threshold=0.25
         )
+        
         causalscbench.third_party.notears.utils.set_random_seed(seed)
         gene_names = np.array(gene_names)
         print(f"Number of genes {len(gene_names)}")
-        def process_partition(partition):
-            if len(partition) == 1:
-                return []
-            gene_names_ = gene_names[partition]
-            expression_matrix_ = expression_matrix[:,partition]
-            adjacency = causalscbench.third_party.notears.linear.notears_linear(
-                expression_matrix_, lambda1=self.lambda1, max_iter=20, loss_type="l2"
-            )
-            indices = np.transpose(np.nonzero(adjacency))
-            edges_partition = set()
-            for (i, j) in indices:
-                edges_partition.add((gene_names_[i], gene_names_[j]))
-            return list(edges_partition)
         
         if self.partition == 'disjoint':
             partitions = partion_network(gene_names, 30, seed)
+            tasks = [
+                (partition, gene_names, expression_matrix, self.lambda1)
+                for partition in partitions
+            ]
             edges = []
-            with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
-                partition_results = list(executor.map(process_partition, partitions))
-                for result in partition_results:
-                    edges += result
-            return edges
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_lin, tasks):
+                    edges += e
+            return {"network": edges, "partition": partitions}
+        
         elif self.partition == 'causal':
-            ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=100)
-            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=5,cutoff=1, best_n=None)
+            ss = correlation_superstructure(expression_matrix, seed=seed)#, num_iterations=100)
+            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=1) #0,cutoff=1, best_n=100)
             partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
+            tasks = [
+                (partition, gene_names, expression_matrix, self.lambda1)
+                for partition in partition_inds
+            ]
             edges = []
-            with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
-                partition_results = list(executor.map(process_partition, partition_inds))
-                for result in partition_results:
-                    edges.append(result)
-                    print(result)
-            return screen_projections(ss, partitions, edges, ss_subset=False, finite_lim=True)
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_lin, tasks):
+                    edges.append(e)
+            network = screen_projections(ss, partitions, edges, ss_subset=False, data=expression_matrix, finite_lim=True)
+            return {"network": network, "superstructure": ss, "partition": partitions, "local_edges": edges}
+       
         else:
-            return process_partition([i for i in range(len(gene_names))])
-
+            return {"network": process_partition_lin([i for i in range(len(gene_names))])}
 
 class NotearsMLP(AbstractInferenceModel):
     def __init__(self, lambda1: float = 0.0, partition: str = 'none') -> None:
@@ -117,7 +134,7 @@ class NotearsMLP(AbstractInferenceModel):
             expression_matrix_ = expression_matrix[:,partition]
             model = causalscbench.third_party.notears.nonlinear.NotearsMLP(dims=[len(gene_names_), 10, 1], bias=True)
             adjacency = causalscbench.third_party.notears.nonlinear.notears_nonlinear(
-                model, expression_matrix_, lambda1=self.lambda1, lambda2=self.lambda1, max_iter=20
+                model, expression_matrix_, lambda1=self.lambda1, lambda2=self.lambda1, max_iter=20, w_threshold=0.3
             )
             indices = np.transpose(np.nonzero(adjacency))
             edges_partition = set()
@@ -138,11 +155,14 @@ class NotearsMLP(AbstractInferenceModel):
             partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=5,cutoff=30, best_n=30)
             partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
             edges = []
-            with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
+            weights = []
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
                 partition_results = list(executor.map(process_partition, partition_inds))
                 for result in partition_results:
-                    edges.append(result)
-            return screen_projections(ss, partitions, edges, ss_subset=True, finite_lim=False)
+                    edges.append(result[0])
+                    weights.append(result[1])
+            print(edges)
+            return screen_projections(ss, partitions, edges, ss_subset=True, finite_lim=False), weights
         else:
             return process_partition([i for i in range(len(gene_names))])
 
