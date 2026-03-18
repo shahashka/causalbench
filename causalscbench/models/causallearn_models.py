@@ -18,6 +18,8 @@ from typing import List, Tuple
 import causallearn.search.ConstraintBased.PC
 import causallearn.search.ConstraintBased.FCI
 import causallearn.search.ScoreBased.GES
+from causallearn.utils.PCUtils.BackgroundKnowledge import BackgroundKnowledge
+
 import numpy as np
 from causalscbench.models.abstract_model import AbstractInferenceModel
 from causalscbench.models.training_regimes import TrainingRegime
@@ -26,23 +28,58 @@ from causalscbench.models.utils.model_utils import (
     correlation_superstructure, 
     expansive_causal_partition, screen_projections, rand_edge_cover_partition,
     remove_lowly_expressed_genes)
+
+### PARTITION HELPER FUNCTIONS START ###
 def process_partition_ges(args):
-        partition, gene_names, expression_matrix = args
+        partition, gene_names, expression_matrix, ss = args
 
         if len(partition) == 1:
             return []
 
         gene_names_ = gene_names[partition]
         expression_matrix_ = expression_matrix[:, partition]
+        ss_ = ss[partition][:,partition]
         res_map = causallearn.search.ScoreBased.GES.ges(
             expression_matrix_,
             score_func="local_score_BIC",
             maxP=10,
             parameters=None,
+            skeleton=ss_
         )
         G = res_map["G"]
         return causallearn_graph_to_edges(G, gene_names_)
     
+def process_partition_pc(args):
+        partition, gene_names, expression_matrix, ss, missing_value = args
+
+        if len(partition) == 1:
+            return []
+
+        gene_names_ = gene_names[partition]
+        expression_matrix_ = expression_matrix[:, partition]
+        ss_ = ss[partition][:,partition]
+        #TODO Background knowledge
+        res = causallearn.search.ConstraintBased.PC.pc(
+                expression_matrix_, node_names=gene_names_, mvpc=missing_value
+            )
+        return causallearn_graph_to_edges(res.G, None)
+
+def process_partition_fci(args):
+        partition, gene_names, expression_matrix, ss, missing_value = args
+
+        if len(partition) == 1:
+            return []
+
+        gene_names_ = gene_names[partition]
+        expression_matrix_ = expression_matrix[:, partition]
+        ss_ = ss[partition][:,partition]
+        #TODO Background knowledge
+        res = causallearn.search.ConstraintBased.FCI.fci(
+            expression_matrix_, node_names=gene_names_, mvpc=missing_value
+        )
+        return causallearn_graph_to_edges(res.G, None)
+### PARTITION HELPER FUNCTIONS END ###
+
 class GES(AbstractInferenceModel):
     def __init__(self, partition: str = 'disjoint') -> None:
         super().__init__()
@@ -68,7 +105,7 @@ class GES(AbstractInferenceModel):
         if self.partition == 'disjoint':
             partitions = partion_network(gene_names, 30, seed)
             tasks = [
-                (partition, gene_names, expression_matrix)
+                (partition, gene_names, expression_matrix, None)
                 for partition in partitions
             ]
             edges = []
@@ -82,14 +119,14 @@ class GES(AbstractInferenceModel):
             partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=10,cutoff=1, best_n=100)
             partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
             tasks = [
-                (partition, gene_names, expression_matrix)
+                (partition, gene_names, expression_matrix, ss)
                 for partition in partition_inds
             ]
             edges = []
             with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
                 for e in executor.map(process_partition_ges, tasks):
                     edges.append(e)
-            network = screen_projections(ss, partitions, edges, ss_subset=True, finite_lim=False)
+            network = screen_projections(ss, partitions, edges, ss_subset=False, finite_lim=False)
             return {"network": network, "superstructure": ss, "partition": partitions, "local_edges": edges}
         
         elif self.partition == 'edge_cover':
@@ -97,14 +134,14 @@ class GES(AbstractInferenceModel):
             partitions = rand_edge_cover_partition(ss,gene_names=gene_names, resolution=10 ,cutoff=1, best_n=100)
             partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
             tasks = [
-                (partition, gene_names, expression_matrix)
+                (partition, gene_names, expression_matrix, ss)
                 for partition in partition_inds
             ]
             edges = []
             with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
                 for e in executor.map(process_partition_ges, tasks):
                     edges.append(e)
-            network = screen_projections(ss, partitions, edges, ss_subset=True, finite_lim=False)
+            network = screen_projections(ss, partitions, edges, ss_subset=False, finite_lim=False)
             return {"network": network, "superstructure": ss, "partition": partitions, "local_edges": edges}
         else:
             print("GES algorithm must have disjoint, edge cover or causal partitions")
@@ -133,38 +170,49 @@ class PC(AbstractInferenceModel):
         )
         gene_names = np.array(gene_names)
 
-        def process_partition(partition):
-            if len(partition) == 1:
-                return []
-            gene_names_ = gene_names[partition]
-            expression_matrix_ = expression_matrix[:, partition]
-            res = causallearn.search.ConstraintBased.PC.pc(
-                expression_matrix_, node_names=gene_names_, mvpc=self.missing_value
-            )
-            return causallearn_graph_to_edges(res.G, None)
-     
         if self.partition == 'disjoint':
             partitions = partion_network(gene_names, 30, seed)
+            tasks = [
+                (partition, gene_names, expression_matrix, None, self.missing_value)
+                for partition in partitions
+            ]
             edges = []
-            with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
-                partition_results = list(executor.map(process_partition, partitions))
-                for result in partition_results:
-                    edges += result
-            return edges
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_pc, tasks):
+                    edges += e
+            return {"network": edges, "partition": partitions}
+    
         elif self.partition == 'causal':
-            ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=100)
-            # FOR DEBUGGING ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=10)
-            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=10,cutoff=30, best_n=30)
+            ss = correlation_superstructure(expression_matrix, seed=seed)
+            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=10,cutoff=1, best_n=100)
             partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
+            tasks = [
+                (partition, gene_names, expression_matrix, ss, self.missing_value)
+                for partition in partition_inds
+            ]
             edges = []
-            with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
-                partition_results = list(executor.map(process_partition, partition_inds))
-                for result in partition_results:
-                    edges.append(result)
-            final_edges = screen_projections(ss, partitions, edges, data=expression_matrix, ss_subset=False, finite_lim=True)
-            return final_edges
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_pc, tasks):
+                    edges.append(e)
+            network = screen_projections(ss, partitions, edges, ss_subset=False, finite_lim=False)
+            return {"network": network, "superstructure": ss, "partition": partitions, "local_edges": edges}
+        
+        elif self.partition == 'edge_cover':
+            ss = correlation_superstructure(expression_matrix, seed=seed)#, num_iterations=100)
+            partitions = rand_edge_cover_partition(ss,gene_names=gene_names, resolution=10 ,cutoff=1, best_n=100)
+            partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
+            tasks = [
+                (partition, gene_names, expression_matrix, ss, self.missing_value)
+                for partition in partition_inds
+            ]
+            edges = []
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_pc, tasks):
+                    edges.append(e)
+            network = screen_projections(ss, partitions, edges, ss_subset=False, finite_lim=False)
+            return {"network": network, "superstructure": ss, "partition": partitions, "local_edges": edges}
         else:
-            print("PC algorithm must have disjoint or causal partitions")
+            print("PC algorithm must have disjoint, edge cover or causal partitions")
             NotImplementedError()
 
     
@@ -189,35 +237,47 @@ class FCI(AbstractInferenceModel):
         )
         gene_names = np.array(gene_names)
 
-        def process_partition(partition):
-            if len(partition) == 1:
-                return []
-            gene_names_ = gene_names[partition]
-            expression_matrix_ = expression_matrix[:, partition]
-            res = causallearn.search.ConstraintBased.FCI.fci(
-                expression_matrix_, node_names=gene_names_, mvpc=self.missing_value
-            )
-            return causallearn_graph_to_edges(res.G, None)
-
         if self.partition == 'disjoint':
             partitions = partion_network(gene_names, 30, seed)
+            tasks = [
+                (partition, gene_names, expression_matrix, None, self.missing_value)
+                for partition in partitions
+            ]
             edges = []
-            with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
-                partition_results = list(executor.map(process_partition, partitions))
-                for result in partition_results:
-                    edges += result
-            return edges
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_fci, tasks):
+                    edges += e
+            return {"network": edges, "partition": partitions}
+    
         elif self.partition == 'causal':
-            ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=100)
-            #partitions = expansive_causal_partition(ss, gene_names=gene_names,resolution=5,cutoff=10, best_n=10)
-            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=10,cutoff=30, best_n=30)
+            ss = correlation_superstructure(expression_matrix, seed=seed)
+            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=10,cutoff=1, best_n=100)
             partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
+            tasks = [
+                (partition, gene_names, expression_matrix, ss, self.missing_value)
+                for partition in partition_inds
+            ]
             edges = []
-            with ThreadPoolExecutor(max_workers=2*multiprocessing.cpu_count()) as executor:
-                partition_results = list(executor.map(process_partition, partition_inds))
-                for result in partition_results:
-                    edges.append(result)
-            return screen_projections(ss, partitions, edges, ss_subset=True, finite_lim=False)
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_fci, tasks):
+                    edges.append(e)
+            network = screen_projections(ss, partitions, edges, ss_subset=False, finite_lim=False)
+            return {"network": network, "superstructure": ss, "partition": partitions, "local_edges": edges}
+        
+        elif self.partition == 'edge_cover':
+            ss = correlation_superstructure(expression_matrix, seed=seed)#, num_iterations=100)
+            partitions = rand_edge_cover_partition(ss,gene_names=gene_names, resolution=10 ,cutoff=1, best_n=100)
+            partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
+            tasks = [
+                (partition, gene_names, expression_matrix, ss, self.missing_value)
+                for partition in partition_inds
+            ]
+            edges = []
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_fci, tasks):
+                    edges.append(e)
+            network = screen_projections(ss, partitions, edges, ss_subset=False, finite_lim=False)
+            return {"network": network, "superstructure": ss, "partition": partitions, "local_edges": edges}
         else:
-            print("FCI algorithm must have disjoint or causal partitions")
+            print("FCI algorithm must have disjoint, edge cover or causal partitions")
             NotImplementedError()
