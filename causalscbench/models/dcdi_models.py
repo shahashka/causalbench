@@ -12,7 +12,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 from types import SimpleNamespace
 from typing import List, Tuple
 
@@ -26,6 +27,7 @@ from pytorch_lightning.callbacks import EarlyStopping
 from torch.utils.data import DataLoader, random_split
 from causalscbench.models.abstract_model import AbstractInferenceModel
 from causalscbench.models.training_regimes import TrainingRegime
+from causalscbench.models.utils import partition_config 
 from causalscbench.models.utils.model_utils import (
     partion_network, 
     correlation_superstructure, 
@@ -52,6 +54,103 @@ from causalscbench.third_party.dcdfg.dcdfg.lowrank_mlp.model import (
     MLPModuleGaussianModel,
 )
 
+### PARTITION HELPER FUNCTIONS START ###
+def process_partition_dcdi(args):
+    partition, gene_names_, expression_matrix_, model, seed, interventions,\
+    fraction_train_data, opt, soft_adjacency_matrix_threshold = args
+
+    if len(partition) == 1:
+        return []
+    node_dict = {g: idx for idx, g in enumerate(gene_names_)}
+    gene_names_set = set(gene_names_)
+    subset = []
+    interventions_ = []
+    for idx, intervention in enumerate(interventions):
+        if intervention in gene_names_set or intervention == "non-targeting":
+            subset.append(idx)
+            interventions_.append(intervention)
+    expression_matrix_ = expression_matrix_[subset, :]
+    gene_to_interventions = dict()
+    for i, intervention in enumerate(interventions_):
+        gene_to_interventions.setdefault(intervention, []).append(i)
+
+    mask_intervention = []
+    regimes = []
+    regime_index = 0
+    start = 0
+    data = np.zeros_like(expression_matrix_)
+    for inv, indices in gene_to_interventions.items():
+        targets = [] if inv == "non-targeting" else [node_dict[inv]]
+        regime = 0 if inv == "non-targeting" else regime_index + 1
+        mask_intervention.extend([targets for _ in range(len(indices))])
+        regimes.extend([regime for _ in range(len(indices))])
+        end = start + len(indices)
+        data[start:end, :] = expression_matrix_[indices, :]
+        start = end
+        if inv != "non-targeting":
+            regime_index += 1
+
+    regimes = np.array(regimes)
+
+    train_data = DataManagerFile(
+        data,
+        mask_intervention,
+        regimes,
+        fraction_train_data,
+        train=True,
+        normalize=False,
+        random_seed=seed,
+        intervention=True,
+        intervention_knowledge="known",
+    )
+    test_data = DataManagerFile(
+        data,
+        mask_intervention,
+        regimes,
+        fraction_train_data,
+        train=False,
+        normalize=False,
+        random_seed=seed,
+        intervention=True,
+        intervention_knowledge="known",
+    )
+
+    # You may want to play around with the hyper parameters to find the optimal ones.
+    if model == "DCDI-G":
+        model = LearnableModel_NonLinGaussANM(
+            num_vars=len(gene_names_),
+            num_layers=2,
+            hid_dim=15,
+            intervention=True,
+            intervention_type=opt.intervention_type,
+            intervention_knowledge=opt.intervention_knowledge,
+            num_regimes=train_data.num_regimes,
+        )
+    elif model == "DCDI-DSF":
+        model = DeepSigmoidalFlowModel(
+            num_vars=len(gene_names_),
+            cond_n_layers=2,
+            cond_hid_dim=15,
+            cond_nonlin="leaky-relu",
+            flow_n_layers=2,
+            flow_hid_dim=10,
+            intervention=True,
+            intervention_type=opt.intervention_type,
+            intervention_knowledge=opt.intervention_knowledge,
+            num_regimes=train_data.num_regimes,
+        )
+    else:
+        raise ValueError("Model has to be in {DCDI-G, DCDI-DSF}")
+
+    train(model, train_data, test_data, opt)
+
+    adjacency = model.get_w_adj()
+    indices = np.nonzero(adjacency > soft_adjacency_matrix_threshold)
+    edges_partition = set()
+    for (i, j) in indices:
+        edges_partition.add((gene_names_[i], gene_names_[j]))
+    return list(edges_partition)
+### PARTITION HELPER FUNCTIONS END ###
 
 class DCDI(AbstractInferenceModel):
     def __init__(self, model,  partition: str = 'disjoint') -> None:
@@ -126,121 +225,38 @@ class DCDI(AbstractInferenceModel):
             torch.set_default_device('cuda')
             #torch.set_default_tensor_type("torch.cuda.FloatTensor")
 
-        def process_partition(partition):
-            if len(partition) == 1:
-                return []
-            gene_names_ = gene_names[partition]
-            expression_matrix_ = expression_matrix[:, partition]
-            node_dict = {g: idx for idx, g in enumerate(gene_names_)}
-            gene_names_set = set(gene_names_)
-            subset = []
-            interventions_ = []
-            for idx, intervention in enumerate(interventions):
-                if intervention in gene_names_set or intervention == "non-targeting":
-                    subset.append(idx)
-                    interventions_.append(intervention)
-            expression_matrix_ = expression_matrix_[subset, :]
-            gene_to_interventions = dict()
-            for i, intervention in enumerate(interventions_):
-                gene_to_interventions.setdefault(intervention, []).append(i)
-
-            mask_intervention = []
-            regimes = []
-            regime_index = 0
-            start = 0
-            data = np.zeros_like(expression_matrix_)
-            for inv, indices in gene_to_interventions.items():
-                targets = [] if inv == "non-targeting" else [node_dict[inv]]
-                regime = 0 if inv == "non-targeting" else regime_index + 1
-                mask_intervention.extend([targets for _ in range(len(indices))])
-                regimes.extend([regime for _ in range(len(indices))])
-                end = start + len(indices)
-                data[start:end, :] = expression_matrix_[indices, :]
-                start = end
-                if inv != "non-targeting":
-                    regime_index += 1
-
-            regimes = np.array(regimes)
-
-            train_data = DataManagerFile(
-                data,
-                mask_intervention,
-                regimes,
-                self.fraction_train_data,
-                train=True,
-                normalize=False,
-                random_seed=seed,
-                intervention=True,
-                intervention_knowledge="known",
-            )
-            test_data = DataManagerFile(
-                data,
-                mask_intervention,
-                regimes,
-                self.fraction_train_data,
-                train=False,
-                normalize=False,
-                random_seed=seed,
-                intervention=True,
-                intervention_knowledge="known",
-            )
-
-            # You may want to play around with the hyper parameters to find the optimal ones.
-            if self.model == "DCDI-G":
-                model = LearnableModel_NonLinGaussANM(
-                    num_vars=len(gene_names_),
-                    num_layers=2,
-                    hid_dim=15,
-                    intervention=True,
-                    intervention_type=self.opt.intervention_type,
-                    intervention_knowledge=self.opt.intervention_knowledge,
-                    num_regimes=train_data.num_regimes,
-                )
-            elif self.model == "DCDI-DSF":
-                model = DeepSigmoidalFlowModel(
-                    num_vars=len(gene_names_),
-                    cond_n_layers=2,
-                    cond_hid_dim=15,
-                    cond_nonlin="leaky-relu",
-                    flow_n_layers=2,
-                    flow_hid_dim=10,
-                    intervention=True,
-                    intervention_type=self.opt.intervention_type,
-                    intervention_knowledge=self.opt.intervention_knowledge,
-                    num_regimes=train_data.num_regimes,
-                )
-            else:
-                raise ValueError("Model has to be in {DCDI-G, DCDI-DSF}")
-
-            train(model, train_data, test_data, self.opt)
-
-            adjacency = model.get_w_adj()
-            indices = np.nonzero(adjacency > self.soft_adjacency_matrix_threshold)
-            edges_partition = set()
-            for (i, j) in indices:
-                edges_partition.add((gene_names_[i], gene_names_[j]))
-            return list(edges_partition)
-
         if self.partition == 'disjoint':
-            partitions = partion_network(gene_names, 50, seed)
+            partitions = partion_network(gene_names, partition_config.SIZE_DISJOINT_LARGER, seed)
+            tasks = [
+                (partition, gene_names[partition], expression_matrix[:,partition], self.model, self.seed, interventions, \
+                    self.fraction_train_data, self.opt, self.soft_adjacency_matrix_threshold)
+                for partition in partitions
+            ]
             edges = []
-            with ThreadPoolExecutor(max_workers=self.max_parallel_executors) as executor:
-                partition_results = list(executor.map(process_partition, partitions))
-                for result in partition_results:
-                    edges += result
-            return edges
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_dcdi, tasks):
+                    edges += e
+            return {"network": edges, "partition": partitions}
         elif self.partition == 'causal':
-            ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=100)
-            # FOR DEBUGGING ss = correlation_superstructure(expression_matrix, seed=seed, num_iterations=10)
-            partitions = expansive_causal_partition(ss,gene_names=gene_names, resolution=10,cutoff=30, best_n=30)
+            ss = correlation_superstructure(expression_matrix, seed=seed)
+            partitions = expansive_causal_partition(ss,gene_names=gene_names, 
+                                                    resolution=partition_config.RESOLUTION,
+                                                    cutoff=partition_config.CUTOFF, 
+                                                    best_n=partition_config.BEST_N)
             partition_inds = [[np.argwhere(gene_names==p)[0][0] for p in part] for part in partitions.values()]
+            tasks = [
+                (partition, gene_names[partition], expression_matrix[:,partition], self.model, self.seed, interventions, \
+                    self.fraction_train_data, self.opt, self.soft_adjacency_matrix_threshold)
+                for partition in partition_inds
+            ]
             edges = []
-            with ThreadPoolExecutor(max_workers=self.max_parallel_executors) as executor:
-                partition_results = list(executor.map(process_partition, partition_inds))
-                for result in partition_results:
-                    edges.append(result)
-            final_edges = screen_projections(ss, partitions, edges, data=expression_matrix, ss_subset=False, finite_lim=True)
-            return final_edges
+            with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+                for e in executor.map(process_partition_dcdi, tasks):
+                    edges.append(e)
+            network = screen_projections(ss, partitions, edges, 
+                                         ss_subset=partition_config.SS_SUBSET, 
+                                         finite_lim=partition_config.FINITE_LIMIT)
+            return {"network": network, "superstructure": ss, "partition": partitions, "local_edges": edges}
         else:
             print("DCDI algorithm must have disjoint or causal partitions")
             NotImplementedError()
